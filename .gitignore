@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
+# Dataset recordings — large binary/data files
+dataset/*.mp4
+dataset/*.csv
+contraction_prediction/skin_test/*.mp4
+contraction_prediction/skin_test/*.csv
+contraction_prediction/skin_test/frames_*/

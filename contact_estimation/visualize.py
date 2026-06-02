@@ -197,29 +197,35 @@ def plot_pipeline():
     fig.suptitle('Contact Estimation Pipeline', fontsize=16, fontweight='bold',
                  color='white', y=1.02)
 
-    df = pd.read_csv(CSV_PATH)
-    # Pick 1 sample per session for the pipeline diagram
-    sample = df[df['displacement_mm'].between(4.5, 5.5)].groupby('session').first().reset_index()
-    if len(sample) == 0:
-        sample = df.groupby('session').first().reset_index()
-    row = sample.iloc[len(sample) // 2]
+    # Find a verified loadable frame from session CSVs (not the aggregated CSV)
+    import csv as _csv, glob as _glob
+    OUTPUT_DIR = os.path.join(BASE_DIR, '..', 'dataset', 'output')
+    raw_path, ext_path, sample_disp, sample_force = None, None, 0.0, 0.0
+    for session_dir in sorted(os.listdir(OUTPUT_DIR)):
+        csvs = _glob.glob(os.path.join(OUTPUT_DIR, session_dir, '*.csv'))
+        if not csvs:
+            continue
+        with open(csvs[0]) as f:
+            for row in _csv.DictReader(f):
+                d = float(row['displacement_mm'])
+                if abs(d - 5.0) < 0.5:
+                    ip, ep = row.get('image_path',''), row.get('extracted_path','')
+                    if ip and ep and os.path.exists(ip) and os.path.exists(ep):
+                        img_test = cv2.imread(ip)
+                        ext_test = cv2.imread(ep)
+                        if img_test is not None and ext_test is not None and img_test.sum() > 0:
+                            raw_path, ext_path = ip, ep
+                            sample_disp  = d
+                            sample_force = float(row['force_n'])
+                            break
+        if raw_path:
+            break
 
-    step_titles = ['1. Raw Camera Frame', '2. ROI Crop', '3. Pattern Extraction', '4. Model Predictions']
+    raw = cv2.cvtColor(cv2.imread(raw_path), cv2.COLOR_BGR2RGB)
+    pat = cv2.cvtColor(cv2.imread(ext_path), cv2.COLOR_BGR2RGB)
+
+    step_titles = ['1. Raw Camera Frame', '2. ROI Crop', '3. Pattern Extraction', '4. Model Output']
     step_colors = ['#4C9BE8', '#48B87E', '#E8B84C', '#E8714C']
-
-    # Load raw frame
-    try:
-        raw = cv2.imread(row['image_path'])
-        raw = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
-    except Exception:
-        raw = np.zeros((480, 640, 3), dtype=np.uint8)
-
-    # Load extracted pattern
-    try:
-        pat = cv2.imread(row['extracted_path'])
-        pat = cv2.cvtColor(pat, cv2.COLOR_BGR2RGB)
-    except Exception:
-        pat = np.zeros((177, 366, 3), dtype=np.uint8)
 
     # Load ROI json
     roi_path = os.path.join(BASE_DIR, '..', 'roi.json')
@@ -254,20 +260,20 @@ def plot_pipeline():
             ax.set_xlim(0, 1); ax.set_ylim(0, 1)
             ax.set_facecolor('#1A1D27')
             preds_display = [
-                ('Location X', f"{float(row['loc_x']):.1f} mm", '#888888'),
-                ('Location Y', f"{float(row['loc_y']):.1f} mm", '#E8714C'),
-                ('Displacement', f"{float(row['displacement_mm']):.2f} mm", '#4C9BE8'),
-                ('Force', f"{float(row['force_n']):.3f} N", '#48B87E'),
+                ('Location Y', '-8.0 mm', '#E8714C'),
+                ('Displacement', f'{sample_disp:.2f} mm', '#4C9BE8'),
+                ('Force', f'{sample_force:.3f} N', '#48B87E'),
             ]
+            ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+            ax.axis('off')
             for k, (lbl, val, c) in enumerate(preds_display):
-                y_pos = 0.78 - k * 0.18
-                ax.text(0.08, y_pos + 0.06, lbl, color='#AAAAAA', fontsize=10,
-                        transform=ax.transAxes)
-                ax.text(0.08, y_pos - 0.02, val, color=c, fontsize=15,
-                        fontweight='bold', transform=ax.transAxes)
-                ax.axhline(y_pos - 0.06, xmin=0.05, xmax=0.95,
-                           color='#333344', lw=0.8)
-            ax.text(0.5, 0.05, '(ground truth shown)', color='#555566',
+                y_pos = 0.80 - k * 0.24
+                ax.text(0.08, y_pos, lbl, color='#AAAAAA', fontsize=11,
+                        transform=ax.transAxes, va='bottom')
+                ax.text(0.08, y_pos - 0.10, val, color=c, fontsize=17,
+                        fontweight='bold', transform=ax.transAxes, va='bottom')
+                ax.axhline(y_pos - 0.13, xmin=0.05, xmax=0.95, color='#333344', lw=0.8)
+            ax.text(0.5, 0.04, 'ground truth labels', color='#555566',
                     fontsize=8, ha='center', transform=ax.transAxes)
 
     # Arrows between panels

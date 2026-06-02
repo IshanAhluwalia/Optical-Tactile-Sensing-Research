@@ -123,6 +123,22 @@ Outputs: [ loc_x (mm),  loc_y (mm),  displacement (mm),  force (N) ]
 
 The model generalizes to contact positions it has never seen during training, estimating location to within ~0.5 mm and force to within ~55 mN.
 
+### What the Model Attends To (Grad-CAM)
+
+Grad-CAM reveals which regions of the dot pattern drive each output prediction, across three indentation depths for a train session (y = 0) and a held-out val session (y = −6):
+
+![Grad-CAM](contact_estimation/assets/gradcam.png)
+
+*Each row = one depth (1.5 / 5 / 9 mm). Columns: raw pattern | Location Y attention | Displacement attention | Force attention.*
+
+### Prediction Traces on Held-Out Sessions
+
+Full-press traces (0 → 10 mm) comparing model output vs ground truth for both unseen validation sessions:
+
+![Prediction traces](contact_estimation/assets/prediction_traces.png)
+
+*White = ground truth, colored = model prediction. Shaded region = error. The model tracks both displacement and force throughout the full press.*
+
 ---
 
 ## Step 6 — Live Inference
@@ -149,6 +165,7 @@ TactileSensing/
 │   ├── train_model.py             # Train ResNet18 multi-output regressor
 │   ├── live_predict.py            # Real-time inference from camera
 │   ├── visualize.py               # Generate performance plots
+│   ├── explain.py                 # Grad-CAM + prediction trace figures
 │   └── assets/                    # Performance and pipeline figures
 ├── displacement_test/             # Earlier single-output displacement model
 ├── contraction_prediction/        # Earlier contraction classifier

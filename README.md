@@ -54,6 +54,53 @@ Predicts skin contraction state from camera frames using a trained CNN.
 
 ---
 
+### `contact_estimation/` — Contact Location, Force & Displacement Estimation
+
+Multi-output ResNet18 model trained on extracted skin pattern images to estimate three contact properties simultaneously in real time.
+
+**Pipeline:**
+
+![Pipeline](contact_estimation/assets/pipeline.png)
+
+**Model:**
+- **Input**: Extracted binary dot-pattern image (224×224) from the tactile sensor ROI
+- **Backbone**: ResNet18 pretrained on ImageNet, fine-tuned with differential learning rates
+- **Head**: Dropout(0.4) → Linear(512→128) → ReLU → Linear(128→4)
+- **Outputs**: Contact Y-location (mm), Indentation displacement (mm), Contact force (N)
+- **Loss**: L1 (MAE) on normalized outputs
+- **Validation**: Session-level holdout — y = −6 mm and y = −14 mm held out entirely (unseen during training)
+
+**Performance (val MAE on unseen sessions):**
+
+| Output | Train MAE | Val MAE (unseen locations) |
+|---|---|---|
+| Location Y | 0.34 mm | 0.52 mm |
+| Displacement | 0.23 mm | 0.38 mm |
+| Force | 0.026 N | 0.055 N |
+
+![Performance](contact_estimation/assets/performance.png)
+
+*Top row: predicted vs actual. Middle: residuals. Bottom: error as a function of indentation depth.*
+
+**Scripts:**
+
+| Script | Description |
+|---|---|
+| `build_dataset.py` | Aggregates all recorded sessions into a unified CSV |
+| `train_model.py` | Trains the ResNet18 regression model |
+| `live_predict.py` | Real-time inference from live camera feed |
+| `visualize.py` | Generates performance plots and pipeline diagram |
+
+**Dataset:** 9 sessions × ~453 frames each = 4,074 total frames. Each session is a full 0–10 mm indentation at a fixed y-position (0, −2, −4, −6, −8, −10, −12, −14, −16 mm).
+
+---
+
+### `preprocessing/` — Live Pattern Extraction
+
+- `live_extraction.py` — Side-by-side preview of raw camera + extracted dot pattern. Press **S** to interactively select ROI, **R** to record, **Q** to quit.
+
+---
+
 ### `displacement_test/` — Displacement Prediction
 
 Predicts indentation displacement (mm) from camera frames using optical features.

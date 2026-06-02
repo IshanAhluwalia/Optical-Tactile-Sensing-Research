@@ -1,76 +1,119 @@
 # Optical Tactile Sensing Research
 
-Camera-based tactile sensing system for underwater swimmer skin — predicts contraction and measures indentation displacement using optical flow and load cell data.
+A camera-based tactile sensing system that estimates **contact location, indentation depth, and contact force** from visual deformation of a patterned elastomer skin — using only a USB camera and a load cell for ground truth.
 
 ---
 
-## Modules
+## Hardware Setup
 
-### `dataset/` — Synchronized Data Collection Pipeline
+The system uses a **MakerBot 3D printer repurposed as a precision linear actuator** to indent a patterned tactile skin at controlled speed (10 mm/min) while recording synchronized camera and force data.
 
-Hardware: USB camera (640×480) + SparkFun NAU7802 Qwiic load cell via Arduino.
-
-**Scripts:**
-
-| Script | Description |
+| | |
 |---|---|
-| `record.py` | Master recording script — runs camera and load cell simultaneously |
-| `capture.py` | Standalone camera-only capture |
-| `load_cell_stream.py` | Live force plot (0–2 N) from load cell |
+| ![Front view](assets/hardware_front.jpg) | ![Top view](assets/hardware_top.jpg) |
+| *Front: tactile skin mounted in the actuator frame* | *Top: Arduino + NAU7802 load cell breakout* |
 
-**`record.py` workflow:**
-1. Connects to camera and load cell on startup
-2. Computes a Python-side force baseline from first 20 samples (auto-tare)
-3. Waits for force > 0.05 N to detect skin contact
-4. On contact: sets `time = 0`, `displacement = 0`, `force = 0` (relative)
-5. Records camera at 30 fps + force at 40 Hz simultaneously
-6. Calculates displacement as `time_s × (10 mm/min ÷ 60)` — system moves at 10 mm/min
-7. Hard stops at 10 mm indentation (60 seconds)
-8. Saves matched `video_<stamp>.mp4` + `data_<stamp>.csv`
+| Component | Details |
+|---|---|
+| Actuator | MakerBot 3D printer (repurposed linear stage) |
+| Camera | USB 640×480 @ 30 fps, mounted looking at the skin underside |
+| Load cell | SparkFun NAU7802 Qwiic Scale @ 40 SPS |
+| MCU | Arduino (RedBoard Qwiic) — serial at 115200 baud |
+| Skin | Patterned elastomer with printed dot array |
 
-**CSV format (`data_<stamp>.csv`):**
+---
+
+## Step 1 — The Tactile Skin Pattern
+
+The skin is a transparent elastomer with a **printed array of dots** on its surface. When an object contacts the skin, the dots deform — shifting, compressing, and spreading in a way that encodes the contact geometry and force.
+
+The camera is mounted looking up at the underside of the skin through the transparent body, capturing the full dot field during indentation.
+
+---
+
+## Step 2 — Pattern Extraction
+
+Raw camera frames contain lighting variation, reflections, and background clutter. A preprocessing pipeline isolates the dot pattern:
+
+1. **CLAHE** — adaptive histogram equalization to normalize local contrast
+2. **Adaptive thresholding** — detects dots brighter than their local neighborhood
+3. **Global brightness floor** — rejects pixels below intensity 130 (eliminates dim noise)
+4. **Morphological opening** — removes single-pixel noise while preserving dot structure
+
+![Pattern extraction](assets/pattern_extraction.jpg)
+
+*Left: raw camera frame. Right: extracted binary dot pattern fed to the model.*
+
+The extracted pattern is a clean binary representation of dot positions — this is what the neural network learns from.
+
+---
+
+## Step 3 — Dataset Collection
+
+Data is collected by pressing the actuator into the skin at **9 different y-positions** (0 to −16 mm in 2 mm steps) while recording synchronized camera frames + load cell force. Each press runs from 0 → 10 mm at 10 mm/min (60 seconds).
+
+**Grid below:** each row = one contact location, each column = one indentation depth (1 mm / 5 mm / 9 mm). Left half of each cell = raw frame, right half = extracted pattern. Force and displacement labeled.
+
+![Dataset samples](assets/dataset_samples.jpg)
+
+**Per session:** ~453 frames, 0–10 mm displacement, force ranging 0–2.4 N depending on contact position.
+
+**CSV format per frame:**
 ```
-time_s, displacement_mm, frame, force_n
-0.000,  0.0000,          0,     0.000
-0.033,  0.0056,          1,     0.012
+time_s,  displacement_mm,  frame,  force_n,  image_path,  extracted_path
+0.000,   0.0000,           0,      0.000,    frames/frame_00000.jpg,  frames/extracted/frame_00000.jpg
+0.128,   0.0213,           1,      0.001,    frames/frame_00001.jpg,  frames/extracted/frame_00001.jpg
 ...
-60.000, 10.0000,         1800,  0.847
+60.060,  10.010,           452,    1.847,    frames/frame_00452.jpg,  frames/extracted/frame_00452.jpg
 ```
 
-**Arduino (`loadCellCode.ino`):**
-- NAU7802 load cell at 40 SPS
-- Calibration factor: 1041.5
-- Outputs: `timestamp_us, raw, weight_g, force_n` over serial at 115200 baud
+**Total dataset:** 9 sessions × ~453 frames = **4,074 labeled frames**
+
+| Session | y-position | Force range | Displacement |
+|---|---|---|---|
+| `(-140, 0)` | 0 mm | 0 – 2.38 N | 0 – 10 mm |
+| `(-140, -2)` | −2 mm | 0 – 2.13 N | 0 – 10 mm |
+| `(-140, -4)` | −4 mm | 0 – 1.52 N | 0 – 10 mm |
+| `(-140, -6)` | −6 mm | 0 – 0.62 N | 0 – 10 mm |
+| `(-140, -8)` | −8 mm | 0 – 0.50 N | 0 – 10 mm |
+| `(-140, -10)` | −10 mm | 0 – 0.52 N | 0 – 10 mm |
+| `(-140, -12)` | −12 mm | 0 – 0.56 N | 0 – 10 mm |
+| `(-140, -14)` | −14 mm | 0 – 1.27 N | 0 – 10 mm |
+| `(-140, -16)` | −16 mm | 0 – 2.02 N | 0 – 10 mm |
 
 ---
 
-### `contraction_prediction/` — Skin Contraction Prediction
+## Step 4 — Model Architecture
 
-Predicts skin contraction state from camera frames using a trained CNN.
+A **ResNet18** CNN is trained to regress three contact properties simultaneously from a single extracted pattern image.
 
-- `capture.py` — records video from tactile sensor camera
-- `train_model.py` — trains contraction classifier on labeled frames
-- `skin_test/` — raw recordings and labeled datasets
+```
+Input: 224×224 extracted pattern (RGB)
+         ↓
+ResNet18 backbone (pretrained ImageNet, fine-tuned)
+         ↓
+Dropout(0.4) → Linear(512 → 128) → ReLU → Linear(128 → 4)
+         ↓
+Outputs: [ loc_x (mm),  loc_y (mm),  displacement (mm),  force (N) ]
+```
 
----
-
-### `contact_estimation/` — Contact Location, Force & Displacement Estimation
-
-Multi-output ResNet18 model trained on extracted skin pattern images to estimate three contact properties simultaneously in real time.
-
-**Pipeline:**
-
-![Pipeline](contact_estimation/assets/pipeline.png)
-
-**Model:**
-- **Input**: Extracted binary dot-pattern image (224×224) from the tactile sensor ROI
-- **Backbone**: ResNet18 pretrained on ImageNet, fine-tuned with differential learning rates
-- **Head**: Dropout(0.4) → Linear(512→128) → ReLU → Linear(128→4)
-- **Outputs**: Contact Y-location (mm), Indentation displacement (mm), Contact force (N)
+**Training details:**
 - **Loss**: L1 (MAE) on normalized outputs
-- **Validation**: Session-level holdout — y = −6 mm and y = −14 mm held out entirely (unseen during training)
+- **Optimizer**: Adam with differential learning rates — backbone `1e-5`, head `1e-4`
+- **Scheduler**: Cosine annealing
+- **Augmentation**: horizontal/vertical flip, ±8° rotation
+- **Validation**: Session-level holdout — y = −6 mm and y = −14 mm withheld entirely (unseen during training)
+- **Early stopping**: patience = 25 epochs, stopped at epoch 131
 
-**Performance (val MAE on unseen sessions):**
+---
+
+## Step 5 — Results
+
+![Model performance](contact_estimation/assets/performance.png)
+
+*Top: predicted vs actual (blue = train sessions, orange = unseen val sessions). Middle: residuals. Bottom: MAE as a function of indentation depth.*
+
+**Val MAE on completely unseen contact locations:**
 
 | Output | Train MAE | Val MAE (unseen locations) |
 |---|---|---|
@@ -78,51 +121,55 @@ Multi-output ResNet18 model trained on extracted skin pattern images to estimate
 | Displacement | 0.23 mm | 0.38 mm |
 | Force | 0.026 N | 0.055 N |
 
-![Performance](contact_estimation/assets/performance.png)
-
-*Top row: predicted vs actual. Middle: residuals. Bottom: error as a function of indentation depth.*
-
-**Scripts:**
-
-| Script | Description |
-|---|---|
-| `build_dataset.py` | Aggregates all recorded sessions into a unified CSV |
-| `train_model.py` | Trains the ResNet18 regression model |
-| `live_predict.py` | Real-time inference from live camera feed |
-| `visualize.py` | Generates performance plots and pipeline diagram |
-
-**Dataset:** 9 sessions × ~453 frames each = 4,074 total frames. Each session is a full 0–10 mm indentation at a fixed y-position (0, −2, −4, −6, −8, −10, −12, −14, −16 mm).
+The model generalizes to contact positions it has never seen during training, estimating location to within ~0.5 mm and force to within ~55 mN.
 
 ---
 
-### `preprocessing/` — Live Pattern Extraction
+## Step 6 — Live Inference
 
-- `live_extraction.py` — Side-by-side preview of raw camera + extracted dot pattern. Press **S** to interactively select ROI, **R** to record, **Q** to quit.
+`contact_estimation/live_predict.py` runs the model in real time from the live camera feed, overlaying predictions on the video at 30 fps.
 
----
-
-### `displacement_test/` — Displacement Prediction
-
-Predicts indentation displacement (mm) from camera frames using optical features.
-
-- `train_model.py` — trains displacement regressor
-- `assets/` — overlay video showing predicted vs actual displacement
-
-[▶ Watch: Predicted vs Actual Displacement (1:19–1:39)](displacement_test/assets/overlay_1m19s_to_1m39s.mp4)
+![Live pipeline](contact_estimation/assets/pipeline.png)
 
 ---
 
-## Hardware
+## Project Structure
 
-| Component | Details |
-|---|---|
-| Camera | USB, 640×480, ~7.5–30 fps |
-| Load cell | SparkFun NAU7802 Qwiic Scale |
-| MCU | Arduino (RedBoard Qwiic) |
-| Serial | 115200 baud, `/dev/tty.usbmodem*` |
+```
+TactileSensing/
+├── assets/                        # Hardware photos, figures
+├── dataset/
+│   ├── record.py                  # Master recording: camera + load cell synchronized
+│   ├── load_cell_stream.py        # Live force plot
+│   └── output/                    # Recorded sessions (one folder per contact location)
+├── preprocessing/
+│   └── live_extraction.py         # Live pattern extraction preview + ROI selector
+├── contact_estimation/
+│   ├── build_dataset.py           # Aggregate sessions → unified CSV
+│   ├── train_model.py             # Train ResNet18 multi-output regressor
+│   ├── live_predict.py            # Real-time inference from camera
+│   ├── visualize.py               # Generate performance plots
+│   └── assets/                    # Performance and pipeline figures
+├── displacement_test/             # Earlier single-output displacement model
+├── contraction_prediction/        # Earlier contraction classifier
+└── roi.json                       # Camera ROI definition
+```
+
+---
 
 ## Dependencies
 
 ```bash
-pip install opencv-python pyserial matplotlib
+pip install opencv-python pyserial matplotlib torch torchvision pandas numpy pillow
 ```
+
+## Arduino Serial Format
+
+The Arduino outputs 4 comma-separated fields at 115200 baud:
+
+```
+timestamp_us, raw_adc, weight_g, force_n
+1234567, -42301, 12.34, 0.121
+```
+
+Send `t` over serial to re-tare.

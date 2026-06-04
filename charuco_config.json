@@ -1,0 +1,8 @@
+{
+  "cols": 7,
+  "rows": 5,
+  "square_mm": 33.0,
+  "marker_mm": 23.1,
+  "aruco_dict": 4,
+  "dpi": 300
+}

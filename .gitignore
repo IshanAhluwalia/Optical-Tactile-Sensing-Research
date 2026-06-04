@@ -1,0 +1,8 @@
+# Calibration images — large, don't commit
+calib_images/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store

@@ -9,3 +9,8 @@ dataset/*.csv
 contraction_prediction/skin_test/*.mp4
 contraction_prediction/skin_test/*.csv
 contraction_prediction/skin_test/frames_*/
+
+# Large generated outputs
+dataset/output/
+3D Reconstruction/params/stereo_params.json
+contact_estimation/model/best_model.pth

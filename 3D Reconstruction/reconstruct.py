@@ -11,8 +11,12 @@ Mouse controls (vispy TurntableCamera)
 
 Keyboard
 --------
-    R  – capture reference (unloaded skin)
-    Q  – quit
+    R        – capture reference (unloaded skin)
+    C        – toggle contact-simulation overlay (requires reference)
+    + / =    – increase simulated indentation depth
+    -        – decrease simulated indentation depth
+    D        – toggle disparity debug window
+    Q        – quit
 
 Usage
 -----
@@ -40,15 +44,22 @@ except ImportError:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-Z_MIN_MM     = 50.0
-Z_MAX_MM     = 200.0
-DISP_MIN     = 60
-DISP_MAX     = 260
-PATCH_HALF   = 12      # NCC patch half-size → 25×25 window
-NCC_THRESH   = 0.45
-MAX_FEATURES = 600
+Z_MIN_MM      = 50.0
+Z_MAX_MM      = 200.0
+SGBM_MIN_DISP = 60
+SGBM_NUM_DISP = 208    # must be divisible by 16
+SGBM_BLOCK    = 7
 BUFFER_FRAMES = 6
 DEFORM_RANGE  = 3.0    # ±mm
+MAX_CLOUD_PTS = 5000   # subsample dense cloud for rendering
+
+# ── Contact deformation model ─────────────────────────────────────────────────
+CONTACT_SPREAD_U   = 5.0   # Gaussian σ along sensor length (mm)
+CONTACT_SPREAD_V   = 5.0   # Gaussian σ across sensor width (mm)
+CONTACT_EDGE_COMP  = 0.6   # Compliance at edges relative to centre
+CONTACT_T0         = 0.5   # Contact centre across width (0 = one edge, 1 = other)
+CONTACT_DEPTH_MM   = 3.0   # Default simulated indentation depth (mm)
+CONTACT_DEPTH_STEP = 0.5   # Depth increment per keypress (mm)
 
 
 # ── Stereo helpers ────────────────────────────────────────────────────────────
@@ -66,63 +77,106 @@ def load_roi(path="params/skin_roi.json"):
     return None
 
 
-def fixed_grid_points(roi, n_x=40, n_y=14):
-    """Return a fixed regular grid of sample points inside the ROI.
-    Same locations every frame → stable surface fitting."""
-    if roi:
-        x, y, w, h = roi
-        margin = PATCH_HALF + 2
-        xs = np.linspace(x + margin, x + w - margin, n_x)
-        ys = np.linspace(y + margin, y + h - margin, n_y)
-    else:
-        xs = np.linspace(PATCH_HALF + 2, 637 - PATCH_HALF, n_x)
-        ys = np.linspace(PATCH_HALF + 2, 477 - PATCH_HALF, n_y)
-    XX, YY = np.meshgrid(xs, ys)
-    return np.stack([XX.ravel(), YY.ravel()], axis=1).astype(np.float32)
+def make_sgbm():
+    bs = SGBM_BLOCK
+    return cv2.StereoSGBM_create(
+        minDisparity=SGBM_MIN_DISP,
+        numDisparities=SGBM_NUM_DISP,
+        blockSize=bs,
+        P1=8  * 3 * bs * bs,
+        P2=32 * 3 * bs * bs,
+        disp12MaxDiff=2,
+        uniquenessRatio=10,
+        speckleWindowSize=100,
+        speckleRange=2,
+        mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+    )
 
 
-def match_ncc(gray_l, gray_r, pts_l,
-              patch_half=PATCH_HALF, d_min=DISP_MIN, d_max=DISP_MAX,
-              thresh=NCC_THRESH):
-    H, W = gray_l.shape
-    p = patch_half
-    good_l, good_r = [], []
-    for xl, yl in pts_l:
-        xl, yl = int(round(xl)), int(round(yl))
-        if yl-p < 0 or yl+p >= H or xl-p < 0 or xl+p >= W:
-            continue
-        template = gray_l[yl-p:yl+p+1, xl-p:xl+p+1].astype(np.float32)
-        xr_max = min(W-p-1, xl-d_min)
-        xr_min = max(p,     xl-d_max)
-        if xr_max - xr_min < 2:
-            continue
-        best_score, best_xr = -1.0, -1
-        for yr in range(max(p, yl-1), min(H-p-2, yl+1)+1):
-            strip = gray_r[yr-p:yr+p+1, xr_min:xr_max+2*p+1].astype(np.float32)
-            if strip.shape[1] < template.shape[1]:
-                continue
-            res = cv2.matchTemplate(strip, template, cv2.TM_CCOEFF_NORMED)
-            _, mx, _, mxloc = cv2.minMaxLoc(res)
-            if mx > best_score:
-                best_score = mx
-                best_xr    = xr_min + mxloc[0] + p
-        if best_score >= thresh:
-            good_l.append([xl, yl])
-            good_r.append([best_xr, yl])
-    if not good_l:
-        return np.zeros((0,2),np.float32), np.zeros((0,2),np.float32)
-    return np.array(good_l,np.float32), np.array(good_r,np.float32)
+# ── Contact deformation helpers ───────────────────────────────────────────────
+
+def compute_normals(X, Y, Z):
+    """Per-pixel surface normals via finite-difference cross product on a 2-D grid."""
+    dX_di, dX_dj = np.gradient(X)
+    dY_di, dY_dj = np.gradient(Y)
+    dZ_di, dZ_dj = np.gradient(Z)
+    Ti = np.stack([dX_di, dY_di, dZ_di], axis=-1)
+    Tj = np.stack([dX_dj, dY_dj, dZ_dj], axis=-1)
+    N  = np.cross(Ti, Tj)
+    N /= (np.linalg.norm(N, axis=-1, keepdims=True) + 1e-9)
+    return N[..., 0], N[..., 1], N[..., 2]
 
 
-def triangulate(pts_l, pts_r, f, cx, cy, baseline):
-    disp = pts_l[:,0] - pts_r[:,0]
-    ok   = disp > 1.0
-    d    = disp[ok]
-    Z    = f * baseline / d
-    X    = (pts_l[ok,0] - cx) * Z / f
-    Y    = (pts_l[ok,1] - cy) * Z / f
-    depth_ok = (Z > Z_MIN_MM) & (Z < Z_MAX_MM)
-    return np.stack([X[depth_ok], Y[depth_ok], Z[depth_ok]], axis=1).astype(np.float32)
+def build_contact_cloud(X_map, Y_map, Z_map, depth_mm,
+                        spread_u=CONTACT_SPREAD_U,
+                        spread_v=CONTACT_SPREAD_V,
+                        edge_comp=CONTACT_EDGE_COMP,
+                        t0=CONTACT_T0):
+    """
+    Apply a Gaussian contact indentation to a reconstructed skin geometry.
+
+    Displaces surface points along their inward normals; magnitude follows a
+    2-D Gaussian centred at the contact location in intrinsic (length × width)
+    coordinates, attenuated by an edge-compliance envelope.
+
+    Parameters
+    ----------
+    X_map, Y_map, Z_map : (rh, rw) float arrays
+        Reference geometry grids from the stereo reconstruction (may contain NaN).
+    depth_mm : float
+        Peak indentation depth in mm.
+    spread_u, spread_v : float
+        Gaussian σ along the sensor length and width axes (mm).
+    edge_comp : float
+        Minimum compliance at the edges (0 = rigid edge, 1 = uniform).
+    t0 : float
+        Contact centre across the width in [0, 1].
+
+    Returns
+    -------
+    pts    : (N, 3) float32   deformed point positions
+    depths : (N,)  float32   indentation depth per point (for colour mapping)
+    """
+    rh, rw = X_map.shape
+
+    # Width-normalised column parameter t ∈ [0, 1]
+    t_vec  = np.linspace(0, 1, rw)
+    T_grid = np.tile(t_vec[None, :], (rh, 1))  # (rh, rw)
+
+    # Physical width per row (mm), used to convert t → mm
+    x_lo       = np.nanmin(X_map, axis=1, keepdims=True)
+    x_hi       = np.nanmax(X_map, axis=1, keepdims=True)
+    width_grid = np.where(np.isfinite(x_hi - x_lo), x_hi - x_lo, 1.0)
+
+    # Intrinsic coordinates (mm)
+    s0    = float(np.nanmean(Y_map))
+    S_mm  = Y_map - s0                       # deviation along sensor length
+    V_mm  = (T_grid - t0) * width_grid       # lateral deviation from contact centre
+
+    # Edge-compliance envelope — tapers deformation at skin edges
+    dist_edge  = np.minimum(T_grid, 1.0 - T_grid) / 0.5
+    compliance = edge_comp + (1.0 - edge_comp) * np.sin(0.5 * np.pi * dist_edge) ** 2
+
+    # Gaussian indentation depth field (positive = inward)
+    D = depth_mm * np.exp(
+        -(S_mm ** 2 / (2.0 * spread_u ** 2) + V_mm ** 2 / (2.0 * spread_v ** 2))
+    ) * compliance
+
+    # Surface normals (NaN holes filled before gradient)
+    NX, NY, NZ = compute_normals(
+        np.nan_to_num(X_map), np.nan_to_num(Y_map), np.nan_to_num(Z_map)
+    )
+
+    # Displace along inward normal
+    X_def = X_map - D * NX
+    Y_def = Y_map - D * NY
+    Z_def = Z_map - D * NZ
+
+    # Flatten, keep only pixels that had valid geometry
+    valid  = np.isfinite(X_map) & np.isfinite(Y_map) & np.isfinite(Z_map)
+    pts    = np.stack([X_def[valid], Y_def[valid], Z_def[valid]], axis=1).astype(np.float32)
+    depths = D[valid].astype(np.float32)
+    return pts, depths
 
 
 # ── Capture thread ────────────────────────────────────────────────────────────
@@ -145,10 +199,13 @@ class CaptureThread(threading.Thread):
         self.cy       = float(-Q[1,3])
         self.baseline = abs(1.0 / Q[3,2])
 
-        self.surf_buf = deque(maxlen=BUFFER_FRAMES)
-        self.ref_Zi   = None
-        self.has_ref  = False
-        self.ncc_thresh = NCC_THRESH
+        self.sgbm     = make_sgbm()
+        self.disp_buf = deque(maxlen=BUFFER_FRAMES)
+        self.ref_Z_map = None
+        self.has_ref   = False
+        self._ref_maps     = None          # (X, Y, Z) maps kept for contact model
+        self.contact_depth = CONTACT_DEPTH_MM
+        self.show_contact  = False
 
     def stop(self):
         self._stop.set()
@@ -175,12 +232,16 @@ class CaptureThread(threading.Thread):
                 cmd = self.cmd_q.get_nowait()
                 if cmd == "ref":
                     self._capture_ref = True
-                elif cmd == "thresh_up":
-                    self.ncc_thresh = min(self.ncc_thresh + 0.05, 0.95)
-                    print(f"NCC threshold: {self.ncc_thresh:.2f}")
-                elif cmd == "thresh_dn":
-                    self.ncc_thresh = max(self.ncc_thresh - 0.05, 0.05)
-                    print(f"NCC threshold: {self.ncc_thresh:.2f}")
+                elif cmd == "contact_toggle":
+                    self.show_contact = not self.show_contact
+                    print(f"Contact simulation {'ON' if self.show_contact else 'OFF'}  "
+                          f"depth={self.contact_depth:.1f}mm")
+                elif cmd == "depth_up":
+                    self.contact_depth = min(self.contact_depth + CONTACT_DEPTH_STEP, 20.0)
+                    print(f"Contact depth → {self.contact_depth:.1f} mm")
+                elif cmd == "depth_down":
+                    self.contact_depth = max(self.contact_depth - CONTACT_DEPTH_STEP, 0.1)
+                    print(f"Contact depth → {self.contact_depth:.1f} mm")
 
             ret0, img0 = cap0.read()
             ret1, img1 = cap1.read()
@@ -198,31 +259,44 @@ class CaptureThread(threading.Thread):
             gray0 = cv2.cvtColor(rect0, cv2.COLOR_BGR2GRAY)
             gray1 = cv2.cvtColor(rect1, cv2.COLOR_BGR2GRAY)
 
-            feats = fixed_grid_points(self.roi)
-            if len(feats) == 0:
-                continue
-
-            pl, pr = match_ncc(gray0, gray1, feats,
-                                thresh=self.ncc_thresh)
-            if len(pl) == 0:
-                continue
-
-            # ── Build debug overlay image ──────────────────────────────────
-            dbg = rect0.copy()
+            # ── SGBM dense stereo on ROI ───────────────────────────────────
             if self.roi:
                 rx, ry, rw, rh = self.roi
-                cv2.rectangle(dbg, (rx, ry), (rx+rw, ry+rh), (0, 220, 255), 1)
-            for pt in feats:
-                cv2.circle(dbg, (int(pt[0]), int(pt[1])), 2, (80, 80, 80), -1)
-            if len(pl) > 0:
-                disp_arr = pl[:, 0] - pr[:, 0]
-                d_lo, d_hi = float(disp_arr.min()), float(disp_arr.max())
-                for i in range(len(pl)):
-                    t = (disp_arr[i] - d_lo) / max(d_hi - d_lo, 1.0)
-                    color = (int(255*(1-t)), int(180*t), int(255*t))
-                    cv2.circle(dbg, (int(pl[i,0]), int(pl[i,1])), 4, color, -1)
-            cv2.putText(dbg,
-                        f"matched {len(pl)}/{len(feats)}  NCC>={self.ncc_thresh:.2f}",
+            else:
+                rx, ry, rw, rh = 0, 0, gray0.shape[1], gray0.shape[0]
+
+            gl = gray0[ry:ry+rh, rx:rx+rw]
+            gr = gray1[ry:ry+rh, rx:rx+rw]
+
+            raw_disp = self.sgbm.compute(gl, gr).astype(np.float32) / 16.0
+            raw_disp[raw_disp < SGBM_MIN_DISP] = np.nan
+
+            self.disp_buf.append(raw_disp)
+
+            # Temporal median over disparity buffer
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                disp_med = np.nanmedian(
+                    np.stack(list(self.disp_buf), axis=0), axis=0)
+
+            valid_mask = np.isfinite(disp_med)
+            if not valid_mask.any():
+                continue
+
+            # ── Build debug overlay: colorised disparity on left frame ─────
+            dbg = rect0.copy()
+            disp_vis = np.zeros((rh, rw), dtype=np.uint8)
+            vd = disp_med[valid_mask]
+            if len(vd):
+                d_lo, d_hi = float(np.nanmin(vd)), float(np.nanmax(vd))
+                norm = np.clip((disp_med - d_lo) / max(d_hi - d_lo, 1.0), 0, 1)
+                disp_vis = (norm * 255).astype(np.uint8)
+            disp_color = cv2.applyColorMap(disp_vis, cv2.COLORMAP_TURBO)
+            dbg[ry:ry+rh, rx:rx+rw] = cv2.addWeighted(
+                dbg[ry:ry+rh, rx:rx+rw], 0.4, disp_color, 0.6, 0)
+            cv2.rectangle(dbg, (rx, ry), (rx+rw, ry+rh), (0, 220, 255), 1)
+            n_valid = int(valid_mask.sum())
+            cv2.putText(dbg, f"SGBM  valid={n_valid}",
                         (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
             try:
                 self.debug_q.put_nowait(dbg)
@@ -233,72 +307,83 @@ class CaptureThread(threading.Thread):
                 except queue.Full: pass
             # ──────────────────────────────────────────────────────────────
 
-            pts3d = triangulate(pl, pr, self.f, self.cx, self.cy, self.baseline)
-            if len(pts3d) == 0:
+            # ── Disparity → 3D ────────────────────────────────────────────
+            ys_px, xs_px = np.where(valid_mask)
+            us = (xs_px + rx).astype(np.float32)
+            vs = (ys_px + ry).astype(np.float32)
+            ds = disp_med[valid_mask]
+
+            Z = self.f * self.baseline / ds
+            X = (us - self.cx) * Z / self.f
+            Y = (vs - self.cy) * Z / self.f
+            depth_ok = (Z > Z_MIN_MM) & (Z < Z_MAX_MM)
+            if not depth_ok.any():
                 continue
 
-            # Fit surface for smoothing
-            if HAS_SCIPY:
-                x0,x1 = pts3d[:,0].min(), pts3d[:,0].max()
-                y0,y1 = pts3d[:,1].min(), pts3d[:,1].max()
-                if x1-x0 > 1 and y1-y0 > 1:
-                    xi = np.linspace(x0, x1, 60)
-                    yi = np.linspace(y0, y1, 20)
-                    Xi, Yi = np.meshgrid(xi, yi)
-                    try:
-                        Zi = griddata((pts3d[:,0], pts3d[:,1]), pts3d[:,2],
-                                      (Xi, Yi), method="linear")
-                        self.surf_buf.append((Xi, Yi, Zi, pts3d[:,0].min(),
-                                              pts3d[:,0].max(),
-                                              pts3d[:,1].min(),
-                                              pts3d[:,1].max()))
-                    except Exception:
-                        pass
+            # Build a Z map per ROI pixel for deformation tracking
+            Z_map = np.full((rh, rw), np.nan, dtype=np.float32)
+            X_map = np.full((rh, rw), np.nan, dtype=np.float32)
+            Y_map = np.full((rh, rw), np.nan, dtype=np.float32)
+            ys_ok = ys_px[depth_ok]
+            xs_ok = xs_px[depth_ok]
+            Z_map[ys_ok, xs_ok] = Z[depth_ok]
+            X_map[ys_ok, xs_ok] = X[depth_ok]
+            Y_map[ys_ok, xs_ok] = Y[depth_ok]
 
-            # Build smooth cloud from buffer
-            if len(self.surf_buf) > 0:
-                # Use latest fit's grid but median Z
+            out_mask = np.isfinite(Z_map)
+            oys, oxs = np.where(out_mask)
+
+            # Subsample for rendering performance
+            if len(oys) > MAX_CLOUD_PTS:
+                idx = np.random.choice(len(oys), MAX_CLOUD_PTS, replace=False)
+                oys, oxs = oys[idx], oxs[idx]
+
+            pts_smooth = np.stack(
+                [X_map[oys, oxs], Y_map[oys, oxs], Z_map[oys, oxs]], axis=1
+            ).astype(np.float32)
+
+            # Deformation vs reference
+            deform = None
+            if self.has_ref and self.ref_Z_map is not None:
+                if self.ref_Z_map.shape == Z_map.shape:
+                    dZ = Z_map[oys, oxs] - self.ref_Z_map[oys, oxs]
+                    dZ = np.nan_to_num(dZ)
+                    deform = dZ
+
+            # Handle reference capture command
+            if hasattr(self, '_capture_ref') and self._capture_ref:
+                self.ref_Z_map  = Z_map.copy()
+                self._ref_maps  = (X_map.copy(), Y_map.copy(), Z_map.copy())
+                self.has_ref    = True
+                self._capture_ref = False
+                med_z = float(np.nanmedian(Z_map[out_mask]))
+                print(f"Reference captured — {out_mask.sum()} pts, med depth {med_z:.1f}mm")
+
+            # Contact simulation on the reference geometry
+            contact_pts    = None
+            contact_depths = None
+            if self.show_contact and self._ref_maps is not None:
+                X_ref, Y_ref, Z_ref = self._ref_maps
+                contact_pts, contact_depths = build_contact_cloud(
+                    X_ref, Y_ref, Z_ref, self.contact_depth
+                )
+
+            payload = {
+                "pts":           pts_smooth,
+                "deform":        deform,
+                "n_raw":         n_valid,
+                "buf":           len(self.disp_buf),
+                "contact_pts":   contact_pts,
+                "contact_depths": contact_depths,
+                "contact_depth": self.contact_depth,
+                "show_contact":  self.show_contact,
+            }
+            try:
+                self.out_q.put_nowait(payload)
+            except queue.Full:
                 try:
-                    Xi_ref = self.surf_buf[-1][0]
-                    Yi_ref = self.surf_buf[-1][1]
-                    Zi_stack = np.stack([s[2] for s in self.surf_buf], axis=0)
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        Zi_med = np.nanmedian(Zi_stack, axis=0)
-
-                    valid = ~np.isnan(Zi_med)
-                    pts_smooth = np.stack([Xi_ref[valid], Yi_ref[valid], Zi_med[valid]], axis=1)
-
-                    deform = None
-                    if self.has_ref and self.ref_Zi is not None:
-                        if self.ref_Zi.shape == Zi_med.shape:
-                            dZ = Zi_med - self.ref_Zi
-                            dZ[np.isnan(dZ)] = 0
-                            deform = dZ[valid]
-
-                    # Handle reference capture
-                    if hasattr(self, '_capture_ref') and self._capture_ref:
-                        self.ref_Zi  = Zi_med.copy()
-                        self.has_ref = True
-                        self._capture_ref = False
-                        n_valid = valid.sum()
-                        med_z = float(np.nanmedian(Zi_med[valid]))
-                        print(f"Reference captured — {n_valid} pts, med depth {med_z:.1f}mm")
-
-                    payload = {
-                        "pts":    pts_smooth,
-                        "deform": deform,
-                        "n_raw":  len(pl),
-                        "buf":    len(self.surf_buf),
-                    }
-                    try:
-                        self.out_q.put_nowait(payload)
-                    except queue.Full:
-                        try:
-                            self.out_q.get_nowait()
-                            self.out_q.put_nowait(payload)
-                        except Exception:
-                            pass
+                    self.out_q.get_nowait()
+                    self.out_q.put_nowait(payload)
                 except Exception:
                     pass
 
@@ -349,6 +434,11 @@ def main():
     scatter = scene.visuals.Markers()
     view.add(scatter)
 
+    # Overlay for contact-simulation geometry
+    scatter_contact = scene.visuals.Markers()
+    scatter_contact.visible = False
+    view.add(scatter_contact)
+
     # Axis widget for orientation reference
     axis = scene.visuals.XYZAxis(parent=view.scene)
 
@@ -369,10 +459,14 @@ def main():
         except queue.Empty:
             return
 
-        pts    = payload["pts"]
-        deform = payload["deform"]
-        n_raw  = payload["n_raw"]
-        buf    = payload["buf"]
+        pts            = payload["pts"]
+        deform         = payload["deform"]
+        n_raw          = payload["n_raw"]
+        buf            = payload["buf"]
+        contact_pts    = payload.get("contact_pts")
+        contact_depths = payload.get("contact_depths")
+        contact_depth  = payload.get("contact_depth", CONTACT_DEPTH_MM)
+        show_contact   = payload.get("show_contact", False)
 
         if len(pts) == 0:
             return
@@ -397,6 +491,25 @@ def main():
 
         scatter.set_data(pts, face_color=colors, size=4, edge_width=0)
 
+        # Contact simulation overlay
+        if show_contact and contact_pts is not None and len(contact_pts) > 0:
+            # Subsample for rendering
+            if len(contact_pts) > MAX_CLOUD_PTS:
+                idx = np.random.choice(len(contact_pts), MAX_CLOUD_PTS, replace=False)
+                contact_pts    = contact_pts[idx]
+                contact_depths = contact_depths[idx]
+            # Colour by indentation depth: deep = warm yellow, shallow = cool blue
+            d_norm = np.clip(contact_depths / max(float(contact_depth), 0.1), 0, 1)
+            cc = np.zeros((len(d_norm), 4), np.float32)
+            cc[:, 0] = d_norm                   # red
+            cc[:, 1] = 0.3 + 0.5 * d_norm       # green
+            cc[:, 2] = 1.0 - 0.9 * d_norm       # blue
+            cc[:, 3] = 1.0
+            scatter_contact.set_data(contact_pts, face_color=cc, size=4, edge_width=0)
+            scatter_contact.visible = True
+        else:
+            scatter_contact.visible = False
+
         # Auto-set camera center on first data
         if buf == 1:
             centre = pts.mean(axis=0)
@@ -404,8 +517,9 @@ def main():
 
         buf_pct = int(buf / BUFFER_FRAMES * 100)
         ref_str = "REF captured" if cap_thread.has_ref else f"buf={buf_pct}% — press R when stable"
-        status_text.text = (f"Points: {len(pts):,}  matched: {n_raw}  {ref_str}  "
-                            f"| R=ref  D=cam  Q=quit  +/-=NCC")
+        contact_str = (f"  CONTACT {contact_depth:.1f}mm" if show_contact else "")
+        status_text.text = (f"Points: {len(pts):,}  valid px: {n_raw}  {ref_str}{contact_str}  "
+                            f"| R=ref  C=contact  +/-=depth  D=cam  Q=quit")
 
         # Debug camera tracking window
         if show_debug[0]:
@@ -431,17 +545,23 @@ def main():
                 show_deform[0] = True
             else:
                 print("No data yet — wait for buffer to fill")
+        elif event.key == "C":
+            if cap_thread.has_ref:
+                cap_thread.cmd_q.put("contact_toggle")
+            else:
+                print("Capture a reference first (R), then press C")
+        elif event.key in ("+", "="):
+            cap_thread.cmd_q.put("depth_up")
+        elif event.key == "-":
+            cap_thread.cmd_q.put("depth_down")
         elif event.key == "D":
             show_debug[0] = not show_debug[0]
-        elif event.key == "+":
-            cap_thread.cmd_q.put("thresh_up")
-        elif event.key == "-":
-            cap_thread.cmd_q.put("thresh_dn")
 
     canvas.show()
     print("\nvispy window open.")
     print("Left-drag = rotate  |  Scroll = zoom  |  Right-drag = pan")
-    print("R = capture reference  |  D = toggle camera view  |  Q = quit\n")
+    print("R = capture reference  |  C = contact simulation  |  +/- = depth  "
+          "|  D = disparity view  |  Q = quit\n")
 
     app.run()
     cap_thread.stop()

@@ -18,12 +18,14 @@ Usage:
 
 import json
 import os
+import time
 
 import pandas as pd
 import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from dataset import GRID_X, GRID_Y, TactileDataset
 from model import DenseContactNet
@@ -145,12 +147,15 @@ def train() -> None:
     patience_ctr = 0
 
     for epoch in range(1, EPOCHS + 1):
+        epoch_start = time.time()
 
         # ── Train ─────────────────────────────────────────────────────────────
         model.train()
         train_total = 0.0
 
-        for batch in train_loader:
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch:3d}/{EPOCHS} [train]",
+                    leave=False, dynamic_ncols=True)
+        for batch in pbar:
             imgs      = batch['image'].to(device)
             c_target  = batch['contact_map'].to(device)
             d_target  = batch['depth_map'].to(device)
@@ -172,7 +177,9 @@ def train() -> None:
             loss.backward()
             optimizer.step()
             train_total += loss.item()
+            pbar.set_postfix(loss=f'{loss.item():.4f}')
 
+        pbar.close()
         scheduler.step()
 
         # ── Validate ──────────────────────────────────────────────────────────
@@ -181,7 +188,8 @@ def train() -> None:
         lx_errs, ly_errs, dp_errs, f_errs = [], [], [], []
 
         with torch.no_grad():
-            for batch in val_loader:
+            for batch in tqdm(val_loader, desc=f"Epoch {epoch:3d}/{EPOCHS} [val]  ",
+                              leave=False, dynamic_ncols=True):
                 imgs      = batch['image'].to(device)
                 c_target  = batch['contact_map'].to(device)
                 d_target  = batch['depth_map'].to(device)
@@ -199,7 +207,6 @@ def train() -> None:
                     LAMBDA_FORCE    * l1_loss( out['force'],        f_target)
                 ).item()
 
-                # MAE in physical units
                 lx_errs.append(
                     (out['loc_x'] - batch['loc_x'].to(device)).abs().mean().item()
                 )
@@ -215,9 +222,10 @@ def train() -> None:
                      - batch['force_raw'].to(device)).abs().mean().item()
                 )
 
-        n_tr = len(train_loader)
-        n_vl = len(val_loader)
+        n_tr    = len(train_loader)
+        n_vl    = len(val_loader)
         val_avg = val_total / n_vl
+        elapsed = time.time() - epoch_start
 
         def _mean(lst):
             return sum(lst) / len(lst)
@@ -226,7 +234,9 @@ def train() -> None:
             f"Epoch {epoch:3d}/{EPOCHS}  "
             f"train={train_total/n_tr:.4f}  val={val_avg:.4f}  |  "
             f"loc_x={_mean(lx_errs):.2f}mm  loc_y={_mean(ly_errs):.2f}mm  "
-            f"disp={_mean(dp_errs):.3f}mm  force={_mean(f_errs):.4f}N"
+            f"disp={_mean(dp_errs):.3f}mm  force={_mean(f_errs):.4f}N  "
+            f"lr={scheduler.get_last_lr()[1]:.2e}  "
+            f"[{elapsed/60:.1f}min]"
         )
 
         # ── Checkpoint ────────────────────────────────────────────────────────

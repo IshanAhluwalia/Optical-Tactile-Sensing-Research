@@ -94,8 +94,8 @@ def train() -> None:
     train_sessions, val_sessions = get_sessions(CSV_PATH)
     print(f"Train sessions: {len(train_sessions)}  |  Val sessions: {len(val_sessions)}")
 
-    train_ds = TactileDataset(CSV_PATH, train_sessions, train=True,  stride=1)
-    val_ds   = TactileDataset(CSV_PATH, val_sessions,   train=False, stride=1)
+    train_ds = TactileDataset(CSV_PATH, train_sessions, train=True,  stride=5)
+    val_ds   = TactileDataset(CSV_PATH, val_sessions,   train=False, stride=5)
     print(f"Train samples:  {len(train_ds)}  |  Val samples: {len(val_ds)}")
     print(f"disp_max={train_ds.disp_max:.3f} mm  "
           f"force_max={train_ds.force_max:.3f} N  "

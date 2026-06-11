@@ -133,7 +133,6 @@ def train() -> None:
         list(model.dec3.parameters()) +
         list(model.dec2.parameters()) +
         list(model.dec1.parameters()) +
-        list(model.grid_pool.parameters()) +
         list(model.contact_head.parameters()) +
         list(model.depth_head.parameters()) +
         list(model.pressure_head.parameters()) +

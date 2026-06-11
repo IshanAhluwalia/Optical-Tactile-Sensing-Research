@@ -10,7 +10,7 @@ Outputs per forward pass:
     displacement : (B,)       normalised total depth
     force        : (B,)       normalised total force
 
-H = GRID_H = 10,  W = GRID_W = 27
+H = GRID_H = 9,  W = GRID_W = 37
 """
 
 import torch
@@ -53,9 +53,12 @@ class DecoderBlock(nn.Module):
 
 class DenseContactNet(nn.Module):
     """
-    Encoder:  ResNet18 pretrained on ImageNet, split into 5 stages.
+    Encoder:  ResNet18 pretrained on ImageNet, adapted for 1-channel grayscale input.
+              The first conv's pretrained weights (64, 3, 7, 7) are averaged across the
+              3 input channels to produce (64, 1, 7, 7) weights — preserving the learned
+              edge/texture detectors while accepting single-channel images.
     Decoder:  4 U-Net decoder blocks, ending at 112×112×64.
-    Pool:     AdaptiveAvgPool2d → (GRID_H × GRID_W) = (10 × 27).
+    Pool:     AdaptiveAvgPool2d → (GRID_H × GRID_W) = (9 × 37).
     Heads:
       - Three 1×1 conv heads on the pooled feature map:
           contact_head  → sigmoid    → contact probability map
@@ -65,7 +68,7 @@ class DenseContactNet(nn.Module):
           → [normalised_displacement, normalised_force]
     Soft-argmax on the contact map extracts (loc_x, loc_y) in mm.
 
-    Spatial dimensions at each encoder stage (input 224×224):
+    Spatial dimensions at each encoder stage (input 1×224×224):
         enc_stem  : 112×112, 64 ch   (conv1 + bn1 + relu)
         enc_pool  : 56×56,   64 ch   (maxpool)  ← fed into enc1
         enc1      : 56×56,   64 ch   (layer1)
@@ -80,12 +83,17 @@ class DenseContactNet(nn.Module):
         # ── Encoder ──────────────────────────────────────────────────────────
         bb = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
 
-        self.enc_stem = nn.Sequential(bb.conv1, bb.bn1, bb.relu)  # 224→112, 64ch
-        self.enc_pool = bb.maxpool                                  # 112→56,  64ch
-        self.enc1     = bb.layer1                                   # 56×56,   64ch
-        self.enc2     = bb.layer2                                   # 28×28,  128ch
-        self.enc3     = bb.layer3                                   # 14×14,  256ch
-        self.enc4     = bb.layer4                                   # 7×7,   512ch
+        # Adapt first conv from 3-channel to 1-channel by averaging pretrained weights.
+        # This preserves the learned feature detectors rather than reinitialising randomly.
+        conv1_new = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        conv1_new.weight.data = bb.conv1.weight.data.mean(dim=1, keepdim=True)
+
+        self.enc_stem = nn.Sequential(conv1_new, bb.bn1, bb.relu)  # 224→112, 64ch
+        self.enc_pool = bb.maxpool                                   # 112→56,  64ch
+        self.enc1     = bb.layer1                                    # 56×56,   64ch
+        self.enc2     = bb.layer2                                    # 28×28,  128ch
+        self.enc3     = bb.layer3                                    # 14×14,  256ch
+        self.enc4     = bb.layer4                                    # 7×7,   512ch
 
         # ── Decoder ──────────────────────────────────────────────────────────
         # (in_ch from coarser path, skip_ch from encoder, out_ch)
@@ -95,7 +103,7 @@ class DenseContactNet(nn.Module):
         self.dec1 = DecoderBlock( 64,  64,  64)   # 56→112
 
         # ── Pool to sensor grid ───────────────────────────────────────────────
-        self.grid_pool = nn.AdaptiveAvgPool2d((GRID_H, GRID_W))  # 112→(10, 27)
+        self.grid_pool = nn.AdaptiveAvgPool2d((GRID_H, GRID_W))  # 112→(9, 37)
 
         # ── Spatial heads (1×1 conv = independent linear projection per cell) ─
         self.contact_head  = nn.Conv2d(64, 1, 1)

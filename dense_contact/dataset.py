@@ -2,7 +2,7 @@
 PyTorch dataset for dense contact estimation.
 
 For each frame the dataset produces:
-  - image          : (3, 224, 224) normalised tensor
+  - image          : (1, 224, 224) normalised grayscale tensor
   - contact_map    : (H, W) Gaussian blob in [0, 1], peak = 1 at contact centre
   - depth_map      : (H, W) Hertz depth profile in [0, 1], normalised by disp_max
   - pressure_map   : (H, W) Hertz pressure profile in [0, 1], normalised by pressure_max
@@ -20,16 +20,17 @@ from torchvision import transforms
 
 # ── Sensor grid ────────────────────────────────────────────────────────────────
 # Actual mm coordinates of each sampled position on the sensor surface.
+# Full continuous grid: 138 to 210 mm every 2 mm (37 columns), 0 to 16 mm (9 rows).
 GRID_X = np.array(
-    [138, 140, 142, 144, 146, 148, 150, 152, 154, 156,
-     158, 160, 162, 164, 186, 188, 190, 192, 194, 196,
-     198, 200, 202, 204, 206, 208, 210],
+    [138, 140, 142, 144, 146, 148, 150, 152, 154, 156, 158, 160, 162, 164,
+     166, 168, 170, 172, 174, 176, 178, 180, 182, 184,
+     186, 188, 190, 192, 194, 196, 198, 200, 202, 204, 206, 208, 210],
     dtype=np.float32,
 )
-GRID_Y = np.array([0, 2, 4, 6, 8, 10, 12, 14, 16, 18], dtype=np.float32)
+GRID_Y = np.array([0, 2, 4, 6, 8, 10, 12, 14, 16], dtype=np.float32)
 
-GRID_H = len(GRID_Y)   # 10
-GRID_W = len(GRID_X)   # 27
+GRID_H = len(GRID_Y)   # 9
+GRID_W = len(GRID_X)   # 37
 
 R_INDENTOR = 10.0  # mm  (1 cm spherical tip)
 
@@ -87,20 +88,23 @@ def make_hertz_labels(
 
 
 # ── Dataset ───────────────────────────────────────────────────────────────────
+# Grayscale normalisation stats computed from 500 sampled images in the dataset.
+_GRAY_MEAN = [0.4513]
+_GRAY_STD  = [0.2898]
 
 _TRAIN_TRANSFORM = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.RandomHorizontalFlip(),
     transforms.RandomVerticalFlip(p=0.3),
     transforms.RandomRotation(8),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    transforms.ToTensor(),                          # → (1, H, W) in [0, 1]
+    transforms.Normalize(_GRAY_MEAN, _GRAY_STD),
 ])
 
 _VAL_TRANSFORM = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    transforms.Normalize(_GRAY_MEAN, _GRAY_STD),
 ])
 
 
@@ -137,7 +141,7 @@ class TactileDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         row = self.df.iloc[idx]
 
-        img = Image.open(row['extracted_path']).convert('RGB')
+        img = Image.open(row['image_path']).convert('L')  # grayscale
         img = self.transform(img)
 
         delta = float(row['displacement_mm'])

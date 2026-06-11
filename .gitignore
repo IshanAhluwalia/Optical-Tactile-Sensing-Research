@@ -14,3 +14,9 @@ contraction_prediction/skin_test/frames_*/
 dataset/output/
 3D Reconstruction/params/stereo_params.json
 contact_estimation/model/best_model.pth
+
+# Dense contact — generated images and model weights (too large for git)
+dense_contact/images/
+dense_contact/model/
+dense_contact/sample_extracted.png
+dense_contact/sample_raw.png

@@ -51,11 +51,25 @@ LAMBDA_FORCE    = 0.5
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+VAL_FRACTION = 0.2   # 20% of sessions held out
+RANDOM_SEED  = 42
+
 def get_sessions(csv_path: str) -> tuple[list[str], list[str]]:
-    """Split sessions: hold out y=6 and y=14 rows for validation."""
-    sessions = sorted(pd.read_csv(csv_path)['session'].unique())
-    val  = [s for s in sessions if s.endswith('_y6') or s.endswith('_y14')]
-    train = [s for s in sessions if s not in val]
+    """
+    Randomly hold out 20% of sessions scattered across the full grid.
+
+    Sessions are shuffled with a fixed seed then split 80/20. This ensures
+    the model sees frames from every spatial location (every X and Y) during
+    training, and validation is representative of the whole sensor surface
+    rather than being concentrated in specific rows/columns.
+    """
+    import random
+    sessions = sorted(pd.read_csv(csv_path)['session'].unique().tolist())
+    rng = random.Random(RANDOM_SEED)
+    rng.shuffle(sessions)
+    n_val = max(1, int(len(sessions) * VAL_FRACTION))
+    val   = sessions[:n_val]
+    train = sessions[n_val:]
     return train, val
 
 

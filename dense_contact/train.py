@@ -34,7 +34,7 @@ CSV_PATH   = os.path.join(_HERE, 'dataset.csv')
 MODEL_DIR  = os.path.join(_HERE, 'model')
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
-BATCH_SIZE   = 16
+BATCH_SIZE   = 32
 EPOCHS       = 150
 PATIENCE     = 25
 
@@ -99,13 +99,14 @@ def train() -> None:
           f"force_max={train_ds.force_max:.3f} N  "
           f"pressure_max={train_ds.pressure_max:.5f} N/mm²")
 
+    pin = device.type == 'cuda'  # pin_memory only helps on CUDA, not MPS
     train_loader = DataLoader(
         train_ds, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=4, pin_memory=True,
+        num_workers=4, pin_memory=pin,
     )
     val_loader = DataLoader(
         val_ds, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=4, pin_memory=True,
+        num_workers=4, pin_memory=pin,
     )
 
     model = DenseContactNet().to(device)

@@ -103,7 +103,10 @@ class DenseContactNet(nn.Module):
         self.dec1 = DecoderBlock( 64,  64,  64)   # 56→112
 
         # ── Pool to sensor grid ───────────────────────────────────────────────
-        self.grid_pool = nn.AdaptiveAvgPool2d((GRID_H, GRID_W))  # 112→(9, 37)
+        # AdaptiveAvgPool2d requires input sizes divisible by output sizes on MPS,
+        # which 112 is not (112/9, 112/37 are non-integer). Use bilinear interpolation
+        # instead — equivalent for downsampling and fully MPS-compatible.
+        # No learnable parameters; applied in forward() via F.interpolate.
 
         # ── Spatial heads (1×1 conv = independent linear projection per cell) ─
         self.contact_head  = nn.Conv2d(64, 1, 1)
@@ -144,8 +147,8 @@ class DenseContactNet(nn.Module):
         d = self.dec2(d,  s1)             # 56×56,   64ch
         d = self.dec1(d,  s0)             # 112×112,  64ch
 
-        # Pool to sensor grid resolution
-        g = self.grid_pool(d)             # (B, 64, 10, 27)
+        # Pool to sensor grid resolution via bilinear interpolation (MPS-compatible)
+        g = F.interpolate(d, size=(GRID_H, GRID_W), mode='bilinear', align_corners=False)
 
         # Spatial heads
         contact  = torch.sigmoid(self.contact_head(g)).squeeze(1)   # (B, 10, 27)

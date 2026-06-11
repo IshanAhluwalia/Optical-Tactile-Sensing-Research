@@ -111,12 +111,16 @@ _VAL_TRANSFORM = transforms.Compose([
 class TactileDataset(Dataset):
     """
     Args:
-        csv_path : path to dataset.csv (built by build_dataset.py)
+        csv_path : path to dataset.csv (built by build_images.py)
         sessions : list of session strings to include (e.g. ['x144_y8', ...])
         train    : whether to apply training augmentations
+        stride   : keep every Nth frame per session (default 5).
+                   Adjacent frames in a 60s press differ by ~0.022mm — highly
+                   redundant. stride=5 keeps ~90 frames/session while preserving
+                   the full 0→10mm indentation curve.
     """
 
-    def __init__(self, csv_path: str, sessions: list[str], train: bool = True):
+    def __init__(self, csv_path: str, sessions: list[str], train: bool = True, stride: int = 5):
         # Load full CSV to compute global normalisation stats
         full_df = pd.read_csv(csv_path)
         self.disp_max = float(full_df['displacement_mm'].max())
@@ -131,8 +135,12 @@ class TactileDataset(Dataset):
         p0_vals = 3.0 * valid['force_n'].values / (2.0 * np.pi * a_vals ** 2)
         self.pressure_max = float(p0_vals.max())
 
-        # Subset to requested sessions
-        self.df = full_df[full_df['session'].isin(sessions)].reset_index(drop=True)
+        # Subset to requested sessions, then subsample every `stride` frames
+        subset = full_df[full_df['session'].isin(sessions)]
+        subset = subset.groupby('session', group_keys=False).apply(
+            lambda g: g.iloc[::stride]
+        )
+        self.df = subset.reset_index(drop=True)
         self.transform = _TRAIN_TRANSFORM if train else _VAL_TRANSFORM
 
     def __len__(self) -> int:

@@ -94,8 +94,8 @@ def train() -> None:
     train_sessions, val_sessions = get_sessions(CSV_PATH)
     print(f"Train sessions: {len(train_sessions)}  |  Val sessions: {len(val_sessions)}")
 
-    train_ds = TactileDataset(CSV_PATH, train_sessions, train=True)
-    val_ds   = TactileDataset(CSV_PATH, val_sessions,   train=False)
+    train_ds = TactileDataset(CSV_PATH, train_sessions, train=True,  stride=1)
+    val_ds   = TactileDataset(CSV_PATH, val_sessions,   train=False, stride=1)
     print(f"Train samples:  {len(train_ds)}  |  Val samples: {len(val_ds)}")
     print(f"disp_max={train_ds.disp_max:.3f} mm  "
           f"force_max={train_ds.force_max:.3f} N  "
@@ -112,6 +112,12 @@ def train() -> None:
     )
 
     model = DenseContactNet().to(device)
+
+    # ── Resume from checkpoint if one exists ──────────────────────────────────
+    resume_path = os.path.join(MODEL_DIR, 'resume_checkpoint.pth')
+    start_epoch  = 1
+    best_val     = float('inf')
+    patience_ctr = 0
 
     # Differential learning rates: backbone (pretrained) vs decoder + heads
     backbone_params = (
@@ -143,10 +149,19 @@ def train() -> None:
     mse_loss = nn.MSELoss()
     l1_loss  = nn.L1Loss()
 
-    best_val = float('inf')
-    patience_ctr = 0
+    if os.path.exists(resume_path):
+        ckpt = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt['model_state'])
+        optimizer.load_state_dict(ckpt['optimizer'])
+        scheduler.load_state_dict(ckpt['scheduler'])
+        start_epoch  = ckpt['epoch'] + 1
+        best_val     = ckpt['best_val']
+        patience_ctr = ckpt['patience_ctr']
+        print(f"Resumed from epoch {ckpt['epoch']}  (best val={best_val:.4f})")
+    else:
+        print("Starting fresh training run")
 
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(start_epoch, EPOCHS + 1):
         epoch_start = time.time()
 
         # ── Train ─────────────────────────────────────────────────────────────
@@ -240,25 +255,39 @@ def train() -> None:
         )
 
         # ── Checkpoint ────────────────────────────────────────────────────────
+        stats = {
+            'disp_max':     train_ds.disp_max,
+            'force_max':    train_ds.force_max,
+            'pressure_max': train_ds.pressure_max,
+            'grid_x':       GRID_X.tolist(),
+            'grid_y':       GRID_Y.tolist(),
+        }
+
+        # Best model — saved whenever val loss improves
         if val_avg < best_val:
             best_val = val_avg
             patience_ctr = 0
             torch.save(model.state_dict(), os.path.join(MODEL_DIR, 'best_model.pth'))
-            stats = {
-                'disp_max':     train_ds.disp_max,
-                'force_max':    train_ds.force_max,
-                'pressure_max': train_ds.pressure_max,
-                'grid_x':       GRID_X.tolist(),
-                'grid_y':       GRID_Y.tolist(),
-            }
             with open(os.path.join(MODEL_DIR, 'model_stats.json'), 'w') as fh:
                 json.dump(stats, fh, indent=2)
-            print(f"  ✓ saved (best val={best_val:.4f})")
+            print(f"  ✓ best model saved (val={best_val:.4f})")
         else:
             patience_ctr += 1
             if patience_ctr >= PATIENCE:
                 print(f"Early stopping at epoch {epoch}")
                 break
+
+        # Resume checkpoint — saved every epoch so training can be restarted
+        # from exactly where it left off if interrupted
+        torch.save({
+            'epoch':         epoch,
+            'model_state':   model.state_dict(),
+            'optimizer':     optimizer.state_dict(),
+            'scheduler':     scheduler.state_dict(),
+            'best_val':      best_val,
+            'patience_ctr':  patience_ctr,
+            'stats':         stats,
+        }, os.path.join(MODEL_DIR, 'resume_checkpoint.pth'))
 
     print(f"\nDone. Best val loss: {best_val:.4f}")
     print(f"Weights: {MODEL_DIR}/best_model.pth")

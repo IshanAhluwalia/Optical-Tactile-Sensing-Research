@@ -18,5 +18,12 @@ contact_estimation/model/best_model.pth
 # Dense contact — generated images and model weights (too large for git)
 dense_contact/images/
 dense_contact/model/
-dense_contact/sample_extracted.png
-dense_contact/sample_raw.png
+dense_contact/model_pc/
+dense_contact/assets/sample_extracted.png
+dense_contact/assets/sample_raw.png
+
+# Large model checkpoints and generated outputs
+*.pth
+preprocessing/output/*.mp4
+experiments/optical_flow/*.mp4
+experiments/optical_flow/*.npz

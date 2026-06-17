@@ -34,8 +34,18 @@ RX, RY, RW, RH = _roi['x'], _roi['y'], _roi['w'], _roi['h']
 # ── Pattern extraction ────────────────────────────────────────────────────────
 _clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
+def _homomorphic(gray: np.ndarray, sigma: float = 60) -> np.ndarray:
+    log_img = np.log(gray.astype(np.float32) + 1.0)
+    blur = cv2.GaussianBlur(log_img, (0, 0), sigma)
+    filtered = 0.5 * blur + 1.5 * (log_img - blur)
+    out = np.exp(filtered) - 1.0
+    return cv2.normalize(out, None, 0.0, 255.0, cv2.NORM_MINMAX).astype(np.uint8)
+
+
 def extract_pattern(bgr_frame: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2GRAY)
+    # Remove specular glare before local contrast enhancement
+    gray = _homomorphic(gray)
     # Enhance local contrast so ink stands out even in dim lighting
     enhanced = _clahe.apply(gray)
     # THRESH_BINARY: bright ink (white on dark) → white, background → black

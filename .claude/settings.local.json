@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(__NEW_LINE_31f38328070c2a02__ cd /Users/ishanahluwalia/TactileSensing/dataset/output)",
+      "Bash(__NEW_LINE_52459bddaee14578__ cd /Users/ishanahluwalia/TactileSensing/dataset/output)",
+      "Bash(__NEW_LINE_52459bddaee14578__ echo \"ANOMALY DETAILS\")",
+      "Bash(__NEW_LINE_52459bddaee14578__ echo \"1. x196_y0 \\(448 frames - slightly low\\)\")",
+      "Bash(__NEW_LINE_52459bddaee14578__ echo \"2. x210_y6 \\(CSV/frame mismatch - 453 frames but 453 CSV lines\\)\")",
+      "Bash(__NEW_LINE_52459bddaee14578__ echo \"3. x164_y0 \\(MISSING ALL FILES\\)\")",
+      "Bash([ -f \"x164_y0/x164_y0.mp4\" ])",
+      "Bash([ -f \"x164_y0/x164_y0.csv\" ])",
+      "Bash([ -d \"x164_y0/frames\" ])",
+      "Bash([ -d \"x164_y0/frames/extracted\" ])",
+      "Bash([ -d \"x164_y0\" ])",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}

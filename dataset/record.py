@@ -82,9 +82,10 @@ all_done      = False   # set True when all locations are recorded
 
 # --- Location sequence ---
 LOCATIONS = [
-    (x, y)
-    for y in range(0, 19, 2)
-    for x in (146, 202)
+    (178, 16),
+] + [
+    (174, y)
+    for y in range(0, 17, 2)
 ]
 
 os.makedirs(BASE_OUTPUT_DIR, exist_ok=True)
@@ -115,7 +116,7 @@ def advance_location():
     with open(_counter_path, 'w') as _cf:
         _cf.write(str(loc_idx))
     if loc_idx >= len(LOCATIONS):
-        print("All 20 locations recorded!", flush=True)
+        print(f"All {len(LOCATIONS)} locations recorded!", flush=True)
         all_done = True
     else:
         load_location()
@@ -148,10 +149,10 @@ def stop_recording():
     print(f"Saved: {video_path}  ({frame_count} frames)", flush=True)
     post_process_frames()
     advance_location()
-    if not all_done and LOCATIONS[loc_idx][1] >= 16:
-        cooldown = 20.0
+    if not all_done and LOCATIONS[loc_idx][1] >= 12:
+        cooldown = 25.0
     else:
-        cooldown = 15.0
+        cooldown = 20.0
     cooldown_until = time.monotonic() + cooldown
     print(f"Cooling down {cooldown}s before next trigger...", flush=True)
 

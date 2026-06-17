@@ -18,7 +18,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import ResNet18_Weights, resnet18
 
+import numpy as np
+
 from dataset import GRID_H, GRID_W, GRID_X, GRID_Y
+
+# ── Point-cloud grid constants (must match build_rest_positions.py) ────────────
+PC_GRID_ROWS = 32
+PC_GRID_COLS = 64
+PC_N_PTS     = PC_GRID_ROWS * PC_GRID_COLS   # 2048
 
 
 # ── Decoder building block ────────────────────────────────────────────────────
@@ -201,3 +208,124 @@ class DenseContactNet(nn.Module):
         loc_y = (weights * gy).sum(dim=(1, 2))
 
         return loc_x, loc_y
+
+
+# ── Point-cloud network ───────────────────────────────────────────────────────
+
+class PointCloudNet(nn.Module):
+    """
+    Image → deformed skin point cloud.
+
+    Given a camera image of the tactile sensor under indentation, predicts the
+    full 3D geometry of the deformed skin surface as a structured point cloud.
+
+    Architecture
+    ------------
+    Encoder  : ResNet18 (pretrained, 1-ch grayscale)
+    Decoder  : 4-stage U-Net (same as DenseContactNet)
+    PC head  : bilinear interpolate decoder output to (PC_GRID_ROWS, PC_GRID_COLS),
+               1×1 conv → per-point ΔX, ΔY, ΔZ offsets from the rest surface
+    Output   : rest_positions + predicted offsets  →  (B, PC_N_PTS, 3) in mm
+
+    Scalar head (auxiliary)
+    -----------------------
+    Off the bottleneck → [normalised_displacement, normalised_force]
+    Helps the encoder learn depth information faster.
+
+    Loss
+    ----
+    MSE(predicted_cloud, target_cloud) — valid because both prediction and
+    target use the same ordered grid, so point-k correspondence is guaranteed.
+    """
+
+    def __init__(self, rest_positions_path: str):
+        """
+        Args:
+            rest_positions_path: path to rest_positions.npy  (PC_N_PTS, 3)
+        """
+        super().__init__()
+
+        # ── Encoder (identical to DenseContactNet) ────────────────────────────
+        bb = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+        conv1_new = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        conv1_new.weight.data = bb.conv1.weight.data.mean(dim=1, keepdim=True)
+
+        self.enc_stem = nn.Sequential(conv1_new, bb.bn1, bb.relu)
+        self.enc_pool = bb.maxpool
+        self.enc1     = bb.layer1
+        self.enc2     = bb.layer2
+        self.enc3     = bb.layer3
+        self.enc4     = bb.layer4
+
+        # ── Decoder (identical to DenseContactNet) ────────────────────────────
+        self.dec4 = DecoderBlock(512, 256, 256)
+        self.dec3 = DecoderBlock(256, 128, 128)
+        self.dec2 = DecoderBlock(128,  64,  64)
+        self.dec1 = DecoderBlock( 64,  64,  64)
+
+        # ── Point-cloud head ──────────────────────────────────────────────────
+        # Predicts ΔX, ΔY, ΔZ offset at each of the PC_GRID_ROWS×PC_GRID_COLS
+        # structured grid positions. tanh bounds offsets to ±MAX_OFFSET mm so
+        # the network can't produce wildly wrong geometry early in training.
+        MAX_OFFSET = 15.0   # mm — larger than max indentation depth
+        self.pc_head = nn.Sequential(
+            nn.Conv2d(64, 32, 3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 3, 1),          # ΔX, ΔY, ΔZ per grid cell
+            nn.Tanh(),                     # output in (-1, 1)
+        )
+        self.max_offset = MAX_OFFSET
+
+        # ── Scalar head (auxiliary: displacement + force) ─────────────────────
+        self.scalar_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(512, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.4),
+            nn.Linear(128, 2),
+            nn.Sigmoid(),
+        )
+
+        # ── Rest-surface positions (fixed, not trainable) ─────────────────────
+        rest = np.load(rest_positions_path).astype(np.float32)  # (N_PTS, 3)
+        self.register_buffer('rest_positions', torch.from_numpy(rest))
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        B = x.shape[0]
+
+        # Encoder
+        s0 = self.enc_stem(x)
+        s1 = self.enc1(self.enc_pool(s0))
+        s2 = self.enc2(s1)
+        s3 = self.enc3(s2)
+        s4 = self.enc4(s3)
+
+        # Scalar head
+        scalars = self.scalar_head(s4)
+
+        # Decoder
+        d = self.dec4(s4, s3)
+        d = self.dec3(d,  s2)
+        d = self.dec2(d,  s1)
+        d = self.dec1(d,  s0)    # (B, 64, 112, 112)
+
+        # Interpolate to point-cloud grid resolution
+        g = F.interpolate(d, size=(PC_GRID_ROWS, PC_GRID_COLS),
+                          mode='bilinear', align_corners=False)  # (B, 64, 32, 64)
+
+        # Predict offsets: (B, 3, 32, 64) → (B, 32*64, 3)
+        offsets = self.pc_head(g)                          # (B, 3, 32, 64), in (-1,1)
+        offsets = offsets * self.max_offset                # scale to mm
+        offsets = offsets.permute(0, 2, 3, 1)             # (B, 32, 64, 3)
+        offsets = offsets.reshape(B, PC_N_PTS, 3)         # (B, 2048, 3)
+
+        # Add rest surface: broadcast (2048, 3) over batch
+        point_cloud = self.rest_positions.unsqueeze(0) + offsets   # (B, 2048, 3)
+
+        return {
+            'point_cloud':  point_cloud,          # (B, 2048, 3) in mm
+            'displacement': scalars[:, 0],        # (B,) normalised
+            'force':        scalars[:, 1],        # (B,) normalised
+        }

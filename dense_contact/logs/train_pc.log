@@ -1,0 +1,21 @@
+Device: mps
+Train sessions: 267  |  Val sessions: 66
+Train samples:  26699  |  Val samples: 6598
+disp_max=10.011 mm  force_max=0.449 N
+Starting fresh training run
+Epoch   1/150  train=0.3553  val=0.0730  |  pc_rmse=0.159mm  disp=0.504mm  force=0.0110N  lr=1.00e-04  [8.9min]
+  ✓ best model saved (val=0.0730)
+Epoch   2/150  train=0.0598  val=0.0407  |  pc_rmse=0.101mm  disp=0.377mm  force=0.0081N  lr=1.00e-04  [8.9min]
+  ✓ best model saved (val=0.0407)
+Epoch   3/150  train=0.0453  val=0.0339  |  pc_rmse=0.080mm  disp=0.341mm  force=0.0079N  lr=9.99e-05  [8.7min]
+  ✓ best model saved (val=0.0339)
+Epoch   4/150  train=0.0391  val=0.0285  |  pc_rmse=0.074mm  disp=0.298mm  force=0.0057N  lr=9.98e-05  [8.7min]
+  ✓ best model saved (val=0.0285)
+Epoch   5/150  train=0.0348  val=0.0291  |  pc_rmse=0.062mm  disp=0.324mm  force=0.0069N  lr=9.97e-05  [8.7min]
+Epoch   6/150  train=0.0322  val=0.0251  |  pc_rmse=0.059mm  disp=0.292mm  force=0.0053N  lr=9.96e-05  [8.7min]
+  ✓ best model saved (val=0.0251)
+Epoch   7/150  train=0.0297  val=0.0234  |  pc_rmse=0.051mm  disp=0.285mm  force=0.0051N  lr=9.95e-05  [29.9min]
+  ✓ best model saved (val=0.0234)EEpoch   8/150  train=0.0279  val=0.0226  |  pc_rmse=0.052mm  disp=0.275mm  force=0.0047N  lr=9.93e-05  [49.1min]
+  ✓ best model saved (val=0.0226)EEpoch   9/150  train=0.0265  val=0.0233  |  pc_rmse=0.044mm  disp=0.291mm  force=0.0055N  lr=9.91e-05  [35.8min]
+/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/multiprocessing/resource_tracker.py:277: UserWarning: resource_tracker: There appear to be 21 leaked semaphore objects/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/multiprocessing/resource_tracker.py:277: UserWarning: resource_tracker: There appear to be 21 leaked semaphore objects to clean up at shutdown: {'/mp-f5b6ot5c', '/mp-nwx_mlmq', '/mp-fgu2_0ol', '/mp-9n93f0cl', '/mp-u3zl32pf', '/mp-38qkigdt', '/mp-7gblcc8o', '/mp-8xl949b1', '/mp-m5dfauty', '/mp-wpoov3ac', '/mp-3gg8rfiy', '/mp-oc_89kvi', '/mp-8f2yzpvz', '/mp-i2zu19m8', '/mp-gdhdsso3', '/mp-v91z8uu2', '/mp-88u672an', '/mp-ah9zo5k9', '/mp-0j1h1jin', '/mp-3ixcgsta', '/mp-i5q4x8os'}
+  warnings.warn(

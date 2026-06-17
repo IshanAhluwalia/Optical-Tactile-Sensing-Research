@@ -1,0 +1,28 @@
+Device: mps
+Train sessions: 267  |  Val sessions: 66
+Train samples:  26699  |  Val samples: 6598
+disp_max=10.011 mm  force_max=0.449 N  pressure_max=0.00236 N/mm²
+Starting fresh training run
+Epoch   1/150  train=0.2824  val=0.1352  |  loc_x=2.60mm  loc_y=0.40mm  disp=0.502mm  force=0.0116N  lr=1.00e-04  [5.5min]
+  ✓ best model saved (val=0.1352)
+Epoch   2/150  train=0.1250  val=0.1038  |  loc_x=1.47mm  loc_y=0.38mm  disp=0.404mm  force=0.0092N  lr=1.00e-04  [5.5min]
+  ✓ best model saved (val=0.1038)
+Epoch   3/150  train=0.0945  val=0.0953  |  loc_x=1.29mm  loc_y=0.36mm  disp=0.388mm  force=0.0085N  lr=9.99e-05  [5.5min]
+  ✓ best model saved (val=0.0953)
+Epoch   4/150  train=0.0802  val=0.0809  |  loc_x=1.06mm  loc_y=0.30mm  disp=0.356mm  force=0.0079N  lr=9.98e-05  [5.5min]
+  ✓ best model saved (val=0.0809)
+Epoch   5/150  train=0.0715  val=0.0694  |  loc_x=0.95mm  loc_y=0.24mm  disp=0.328mm  force=0.0065N  lr=9.97e-05  [5.5min]
+  ✓ best model saved (val=0.0694)
+Epoch   6/150  train=0.0646  val=0.0671  |  loc_x=1.14mm  loc_y=0.22mm  disp=0.327mm  force=0.0068N  lr=9.96e-05  [5.5min]
+  ✓ best model saved (val=0.0671)
+Epoch   7/150  train=0.0585  val=0.0589  |  loc_x=1.04mm  loc_y=0.17mm  disp=0.318mm  force=0.0063N  lr=9.95e-05  [5.8min]
+  ✓ best model saved (val=0.0589)
+Epoch   8/150  train=0.0545  val=0.0565  |  loc_x=0.77mm  loc_y=0.18mm  disp=0.300mm  force=0.0059N  lr=9.93e-05  [5.7min]
+  ✓ best model saved (val=0.0565)
+Epoch   9/150  train=0.0522  val=0.0667  |  loc_x=0.86mm  loc_y=0.25mm  disp=0.301mm  force=0.0062N  lr=9.91e-05  [5.5min]
+Epoch  10/150  train=0.0493  val=0.0562  |  loc_x=0.67mm  loc_y=0.19mm  disp=0.312mm  force=0.0058N  lr=9.89e-05  [5.5min]
+  ✓ best model saved (val=0.0562)
+Epoch  11/150  train=0.0458  val=0.0496  |  loc_x=0.78mm  loc_y=0.13mm  disp=0.293mm  force=0.0061N  lr=9.87e-05  [5.5min]
+  ✓ best model saved (val=0.0496)
+/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/multiprocessing/resource_tracker.py:277: UserWarning: resource_tracker: There appear to be 21 leaked semaphore objects to clean up at shutdown: {'/mp-78l15tft', '/mp-yiwxi9z9', '/mp-rsm4sp_e', '/mp-4rda2krn', '/mp-q5ne8sbp', '/mp-w7yebn7g', '/mp-g3422_wt', '/mp-ghq_7b_h', '/mp-715duhql', '/mp-bipo161p', '/mp-1zqy5w8p', '/mp-0gn762kb', '/mp-szyyqw3e', '/mp-rdi70pfm', '/mp-5qwt480p', '/mp-itmhdejb', '/mp-13v5n1h3', '/mp-dkmrh042', '/mp-tmp91ea5', '/mp-4rt7sar6', '/mp-8n2u_0qe'}
+  warnings.warn(

@@ -18,6 +18,7 @@ Usage:
 
 import json
 import os
+import sys
 import time
 
 import pandas as pd
@@ -49,6 +50,15 @@ LAMBDA_DEPTH    = 1.0
 LAMBDA_PRESSURE = 1.0
 LAMBDA_DISP     = 0.5
 LAMBDA_FORCE    = 0.5
+# Direct location supervision — normalised to [0,1] by grid range.
+# Y is weighted 4× higher than X because the narrow 16mm Y range makes
+# localisation much harder and the model defaults to y≈8.
+LAMBDA_LOC_X    = 0.5
+LAMBDA_LOC_Y    = 2.0
+
+# Grid range constants for normalisation
+_GRID_X_MIN, _GRID_X_RANGE = 138.0, 72.0   # 138–210 mm
+_GRID_Y_RANGE               = 16.0          # 0–16 mm
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -148,6 +158,14 @@ def train() -> None:
     mse_loss = nn.MSELoss()
     l1_loss  = nn.L1Loss()
 
+    # ── Back up existing best model before anything can overwrite it ──────────
+    best_path   = os.path.join(MODEL_DIR, 'best_model.pth')
+    backup_path = os.path.join(MODEL_DIR, 'best_model_backup.pth')
+    if os.path.exists(best_path):
+        import shutil
+        shutil.copy2(best_path, backup_path)
+        print(f"Backed up previous best model → {backup_path}")
+
     if os.path.exists(resume_path):
         ckpt = torch.load(resume_path, map_location=device)
         model.load_state_dict(ckpt['model_state'])
@@ -167,8 +185,9 @@ def train() -> None:
         model.train()
         train_total = 0.0
 
+        _tty = sys.stdout.isatty()
         pbar = tqdm(train_loader, desc=f"Epoch {epoch:3d}/{EPOCHS} [train]",
-                    leave=False, dynamic_ncols=True)
+                    leave=False, dynamic_ncols=True, disable=not _tty)
         for batch in pbar:
             imgs      = batch['image'].to(device)
             c_target  = batch['contact_map'].to(device)
@@ -176,16 +195,23 @@ def train() -> None:
             p_target  = batch['pressure_map'].to(device)
             dp_target = batch['displacement'].to(device)
             f_target  = batch['force'].to(device)
+            lx_target = ((batch['loc_x'] - _GRID_X_MIN) / _GRID_X_RANGE).to(device)
+            ly_target = (batch['loc_y'] / _GRID_Y_RANGE).to(device)
 
             optimizer.zero_grad()
             out = model(imgs)
+
+            lx_pred = (out['loc_x'] - _GRID_X_MIN) / _GRID_X_RANGE
+            ly_pred = out['loc_y'] / _GRID_Y_RANGE
 
             loss = (
                 LAMBDA_CONTACT  * mse_loss(out['contact_map'],  c_target)  +
                 LAMBDA_DEPTH    * mse_loss(out['depth_map'],    d_target)   +
                 LAMBDA_PRESSURE * mse_loss(out['pressure_map'], p_target)  +
                 LAMBDA_DISP     * l1_loss( out['displacement'], dp_target)  +
-                LAMBDA_FORCE    * l1_loss( out['force'],        f_target)
+                LAMBDA_FORCE    * l1_loss( out['force'],        f_target)   +
+                LAMBDA_LOC_X    * l1_loss( lx_pred,            lx_target)  +
+                LAMBDA_LOC_Y    * l1_loss( ly_pred,            ly_target)
             )
 
             loss.backward()
@@ -203,22 +229,29 @@ def train() -> None:
 
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch:3d}/{EPOCHS} [val]  ",
-                              leave=False, dynamic_ncols=True):
+                              leave=False, dynamic_ncols=True, disable=not _tty):
                 imgs      = batch['image'].to(device)
                 c_target  = batch['contact_map'].to(device)
                 d_target  = batch['depth_map'].to(device)
                 p_target  = batch['pressure_map'].to(device)
                 dp_target = batch['displacement'].to(device)
                 f_target  = batch['force'].to(device)
+                lx_target = ((batch['loc_x'] - _GRID_X_MIN) / _GRID_X_RANGE).to(device)
+                ly_target = (batch['loc_y'] / _GRID_Y_RANGE).to(device)
 
                 out = model(imgs)
+
+                lx_pred = (out['loc_x'] - _GRID_X_MIN) / _GRID_X_RANGE
+                ly_pred = out['loc_y'] / _GRID_Y_RANGE
 
                 val_total += (
                     LAMBDA_CONTACT  * mse_loss(out['contact_map'],  c_target)  +
                     LAMBDA_DEPTH    * mse_loss(out['depth_map'],    d_target)   +
                     LAMBDA_PRESSURE * mse_loss(out['pressure_map'], p_target)  +
                     LAMBDA_DISP     * l1_loss( out['displacement'], dp_target)  +
-                    LAMBDA_FORCE    * l1_loss( out['force'],        f_target)
+                    LAMBDA_FORCE    * l1_loss( out['force'],        f_target)   +
+                    LAMBDA_LOC_X    * l1_loss( lx_pred,            lx_target)  +
+                    LAMBDA_LOC_Y    * l1_loss( ly_pred,            ly_target)
                 ).item()
 
                 lx_errs.append(
@@ -262,11 +295,13 @@ def train() -> None:
             'grid_y':       GRID_Y.tolist(),
         }
 
-        # Best model — saved whenever val loss improves
+        # Best model — saved whenever val loss improves; previous best kept as backup
         if val_avg < best_val:
             best_val = val_avg
             patience_ctr = 0
-            torch.save(model.state_dict(), os.path.join(MODEL_DIR, 'best_model.pth'))
+            if os.path.exists(best_path):
+                shutil.copy2(best_path, backup_path)
+            torch.save(model.state_dict(), best_path)
             with open(os.path.join(MODEL_DIR, 'model_stats.json'), 'w') as fh:
                 json.dump(stats, fh, indent=2)
             print(f"  ✓ best model saved (val={best_val:.4f})")
